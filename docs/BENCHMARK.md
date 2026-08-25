@@ -59,6 +59,8 @@ It is not the same runtime everywhere (impossible: NCNN has no GPU path here, on
 
 Hardware: **VisionFive 2** (4× U74 1.5 GHz, RISC-V no-RVV) · **Ryzen 7 3800XT** (2020 desktop CPU) · **Apple M4** (CPU and CoreML = GPU/ANE) · **RTX 3090** (Ampere, 24 GB, onnxruntime CUDA + cuDNN 9.8).
 
+![YOLO inference latency across platforms, 320 vs 1920 input, log scale](benchmark_chart.svg)
+
 ### YOLOv8n — ms/frame (FPS in parentheses)
 
 | imgsz | Board NCNN | Ryzen CPU | M4 CPU | M4 CoreML | RTX 3090 CUDA |
@@ -67,14 +69,24 @@ Hardware: **VisionFive 2** (4× U74 1.5 GHz, RISC-V no-RVV) · **Ryzen 7 3800XT*
 | 640  | 3752 (0.27) | 43.7 (23) | 18.2 (55) | 6.8 (148)     | 5.0 (200) |
 | 960  | —           | 97.5 (10) | 43.9 (23) | 16.9 (59)     | 8.0 (125) |
 | 1280 | —           | 182 (5.5) | 82.6 (12) | 30.0 (33)     | 13.5 (74) |
-| 1920 | ~30 s* (est)| 460 (2.2) | 200 (5.0) | 96.9 (10.3)   | **31.0 (32)** |
+| 1920 | 17138 (0.06)| 460 (2.2) | 200 (5.0) | 96.9 (10.3)   | **31.0 (32)** |
 
 ### YOLO26n (2026) — ms/frame (FPS)
 
-| imgsz | Board NCNN | M4 CPU | M4 CoreML | RTX 3090 CUDA |
-|------:|-----------:|-----------:|--------------:|--------------:|
-| 320  | 1307 (0.77) | 5.3 (188) | 2.5 (393) | 4.5 (222) |
-| 1920 | — (impractical) | 197 (5.1) | 189 (5.3) | **29 (34.5)** |
+| imgsz | Board NCNN | Ryzen CPU | M4 CPU | M4 CoreML | RTX 3090 CUDA |
+|------:|-----------:|---------:|-----------:|--------------:|--------------:|
+| 320  | 1307 (0.77) | 11.9 (84) | 5.3 (188) | 2.5 (393) | 4.5 (222) |
+| 1920 | 24432 (0.04) | 645 (1.6) | 197 (5.1) | 189 (5.3) | **29 (34.5)** |
+
+### The 1920 wall — every model at the camera's full resolution (measured, not estimated)
+
+| Model @1920 | Board NCNN | Ryzen CPU | M4 CPU | M4 CoreML | RTX 3090 CUDA |
+|---|-----------:|---------:|-----------:|--------------:|--------------:|
+| YOLOv8n  | 17.1 s (0.06) | 460 (2.2) | 200 (5.0) | 96.9 (10.3) | 31.0 (32) |
+| YOLO11n  | 21.6 s (0.05) | 470 (2.1) | 207 (4.8) | 137 (7.3)   | **18.0 (56)** |
+| YOLO26n  | 24.4 s (0.04) | 645 (1.6) | 197 (5.1) | 189 (5.3)   | 29.0 (34.5) |
+
+Only the RTX 3090 delivers realtime at 1920. Curiously **YOLO11n is the fastest 1920 model on the GPU** (18 ms — almost 2× YOLOv8n), while the ranking flattens out on CPUs.
 
 ### yolo-fastestv2 (ultra-light model) — board only
 
@@ -84,9 +96,18 @@ Hardware: **VisionFive 2** (4× U74 1.5 GHz, RISC-V no-RVV) · **Ryzen 7 3800XT*
 
 3× faster than yolo26n/yolov8n on the board: the only near-realtime option on this SoC (at the cost of accuracy).
 
-### Camera at full resolution (stream1 1920×1080) — on the board
+### Live HD video stream (stream1 1920×1080) — on the board, measured live
 
-Real capture + yolo26n@320 inference (1920→320 letterbox + forward + decode): **1567 ms end-to-end (0.64 FPS)**. Opening the HD RTSP stream costs ~8 s once. The 1920 resize adds ~250 ms/frame on the scalar CPU compared to the 640×360 substream.
+Both configurations were run for real against the live camera, sampling the server's `/stats` endpoint:
+
+| Configuration | Inference | Frame age | Verdict |
+|---|---:|---:|---|
+| HD capture (1920×1080) + inference @320 | ~1150 ms/frame | 4–35 ms | **Holds.** ~0.85 FPS with an always-fresh frame |
+| HD capture + inference @1920 (yolo26n_1920) | **36 400–36 800 ms/frame** | 26–29 ms | **Does not hold.** One UI update every ~37 s |
+
+The interesting split: the freshest-frame capture keeps the *stream* healthy in both cases (frame age stays under 40 ms even while a 37-second inference runs — stale frames are discarded, never queued). What collapses at 1920 is the *inference*: live it costs even more than the pure-forward benchmark (36.6 s vs 24.4 s), because the HD RTSP decode competes with NCNN for the same 4 scalar cores and the 1920×1080→1920×1920 letterbox is another full-frame pass. CPU temperature during the 1920 run: 47 °C (Noctua fan).
+
+**Practical recipe for full HD on this board**: capture stream1, infer at 320 (~1.15 s/frame end-to-end, ~250 ms of which is the 1920 resize). Native-resolution inference belongs on a GPU (see the 1920 table above).
 
 ### What the numbers say
 
@@ -95,8 +116,6 @@ Real capture + yolo26n@320 inference (1920→320 letterbox + forward + decode): 
 - **M4 CPU ≈ 3090 @320** (latency-bound), but the 3090 pulls away 6× at 1920.
 - **The Ryzen 3800XT** (2020) is the slowest of the modern group, yet still **50–100× the board**.
 - **The board** is 2–3 orders of magnitude behind the rest: the price of a scalar RISC-V CPU with no SIMD/vector unit. It remains useful for low-frequency edge tasks (1 scan/second, presence, counting), not fluid video.
-
-*Board @1920 not actually measured (≈30–40 s/frame extrapolated from 640 = 3.7 s): impractical — use the HD source but process at 320.
 
 ## Thermals (heatsink + Noctua fan)
 

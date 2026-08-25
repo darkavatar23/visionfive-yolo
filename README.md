@@ -77,6 +77,8 @@ UI: `http://<board>:8000`
 | NCNN | YOLO11n | 256 | 883 | 1.13 | |
 | NCNN | yolo-fastestv2 | 352 | 433 | 2.31 | fastest option, lower accuracy |
 
+![YOLO inference latency across platforms, 320 vs 1920 input, log scale](docs/benchmark_chart.svg)
+
 **In short**: modern models (YOLO26n) only run through NCNN and cost ~2× the time of YOLOv5n, in exchange for much better detection quality. fp16 doesn't help, int8 makes it worse (no RVV). The ceiling is the scalar CPU: an NVMe or fp16 will not move FPS. Recommended pick: **YOLO26n @256 (~1.2 FPS)** for quality, YOLOv5n/opencv @256 (2.4 FPS) for fluidity, yolo-fastestv2 (2.3 FPS) as the lightweight compromise.
 
 ## Notes
